@@ -2,6 +2,11 @@
 
 This repo runs a small Varnish Cache layer in front of an Nginx origin. It also includes a Python tool that fills the cache with unique 1 MiB objects and reports whether the configured cache limit is being reached.
 
+## Documentation
+
+- [Developer guide](docs/varnish-guide.md): explains how Varnish and Nginx work in this project.
+- [Demo runbook](docs/run-demo.md): step-by-step commands for running and verifying the local demo.
+
 ## Quick start
 
 ```bash
@@ -13,6 +18,63 @@ python3 tools/cache_limit.py
 ```
 
 The first `curl` to `/cacheable` should show `X-Cache: MISS`. The second request should show `X-Cache: HIT`.
+
+## Run the demo
+
+Start from a clean local environment:
+
+```bash
+cp .env.example .env
+docker compose up -d
+docker compose ps
+```
+
+Open the demo through Varnish:
+
+```bash
+curl -i http://localhost:8080/
+```
+
+Verify cache behavior:
+
+```bash
+curl -I http://localhost:8080/cacheable
+curl -I http://localhost:8080/cacheable
+```
+
+Expected result:
+
+- First request: `X-Cache: MISS`
+- Second request: `X-Cache: HIT`
+
+Verify private content is not cached:
+
+```bash
+curl -I http://localhost:8080/private
+curl -I http://localhost:8080/private
+```
+
+Expected result:
+
+- Both requests should show `X-Cache: MISS`
+- The response should include `Cache-Control: private, no-store`
+
+Compare the cached path and the direct origin path:
+
+```bash
+curl -I http://localhost:8080/cacheable
+curl -I http://localhost:8081/cacheable
+```
+
+Port `8080` goes through Varnish. Port `8081` reaches Nginx directly.
+
+Run the cache-size demo:
+
+```bash
+python3 tools/cache_limit.py
+```
+
+See [docs/run-demo.md](docs/run-demo.md) for the full runbook and troubleshooting notes.
 
 Use these endpoints:
 

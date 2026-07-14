@@ -25,6 +25,7 @@ The important files are:
 - `nginx/default.conf`: defines demo origin endpoints and their HTTP cache headers.
 - `varnish/default.vcl`: defines Varnish caching rules.
 - `tools/cache_limit.py`: fills the cache and reports Varnish storage pressure.
+- `docs/run-demo.md`: copy-paste runbook for the local demo.
 
 ## Quick Start
 
@@ -60,6 +61,8 @@ X-Cache: HIT
 ```
 
 A `MISS` means Varnish did not have a usable object and fetched the response from Nginx. A `HIT` means Varnish served the response from its cache.
+
+For a fuller command-by-command walkthrough, see [Demo Runbook](run-demo.md).
 
 Stop the stack when finished:
 
