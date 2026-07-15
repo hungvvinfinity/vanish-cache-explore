@@ -1,0 +1,20 @@
+[Unit]
+Description=SeaweedFS single-node S3 gateway backend
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=seaweedfs
+Group=seaweedfs
+ExecStart={{ gateway_seaweedfs_binary }} mini -dir={{ gateway_seaweedfs_data_dir }} -ip=127.0.0.1
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths={{ gateway_seaweedfs_data_dir }} {{ gateway_runtime_dir }}
+
+[Install]
+WantedBy=multi-user.target

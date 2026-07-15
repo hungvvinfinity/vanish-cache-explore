@@ -72,6 +72,8 @@ The VCL also restricts purge clients to loopback and private networks. See [Varn
 
 - [Demo runbook](docs/run-demo.md): full verification sequence, including public read-only enforcement and cache-only purge.
 - [Developer guide](docs/varnish-guide.md): component responsibilities and cache policy.
+- [Hướng dẫn cấu hình Varnish–SeaweedFS](docs/varnish-configuration-guide.vi.md): cấu hình native bằng RAM, disk hoặc hybrid.
+- [Native-service Ansible deployment](ansible/README.md): deploy the same gateway on one Ubuntu 24.04 host without Docker.
 
 Stop and remove persistent demo data, cache, and the generated certificate with:
 

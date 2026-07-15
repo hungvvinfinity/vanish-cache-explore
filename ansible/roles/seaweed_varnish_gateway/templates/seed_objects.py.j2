@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""Seed deterministic objects through the local SeaweedFS S3 endpoint."""
+
+from __future__ import annotations
+
+import os
+import sys
+import urllib.error
+import urllib.request
+
+endpoint = os.environ["S3_ENDPOINT"].rstrip("/")
+bucket = os.environ["S3_BUCKET"]
+count = int(os.environ["SEED_OBJECT_COUNT"])
+object_size = int(os.environ["SEED_OBJECT_SIZE"])
+
+
+def payload(index: int) -> bytes:
+    prefix = f"{bucket} seeded object {index:02d}\\n".encode("ascii")
+    return (prefix * ((object_size // len(prefix)) + 1))[:object_size]
+
+
+for index in range(1, count + 1):
+    key = f"objects/object-{index:02d}.bin"
+    request = urllib.request.Request(
+        f"{endpoint}/{bucket}/{key}", data=payload(index), method="PUT",
+        headers={"Content-Type": "application/octet-stream"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            if response.status not in (200, 201):
+                raise RuntimeError(f"unexpected HTTP {response.status}")
+    except (urllib.error.URLError, RuntimeError) as exc:
+        print(f"failed to seed {key}: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+    print(f"seeded s3://{bucket}/{key} ({object_size} bytes)")

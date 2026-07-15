@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+
+cache_dir='{{ gateway_varnish_cache_dir }}'
+cache_file="$cache_dir/cache.bin"
+size='{{ gateway_varnish_disk_size }}'
+
+case "$size" in
+    *[Kk]) bytes=$((${size%?} * 1024)) ;;
+    *[Mm]) bytes=$((${size%?} * 1024 * 1024)) ;;
+    *[Gg]) bytes=$((${size%?} * 1024 * 1024 * 1024)) ;;
+    *[Kk][Bb]) bytes=$((${size%??} * 1024)) ;;
+    *[Mm][Bb]) bytes=$((${size%??} * 1024 * 1024)) ;;
+    *[Gg][Bb]) bytes=$((${size%??} * 1024 * 1024 * 1024)) ;;
+    *[!0-9]*) echo "ERROR: invalid Varnish disk size: $size" >&2; exit 64 ;;
+    *) bytes=$size ;;
+esac
+
+available_kib=$(df -Pk "$cache_dir" | awk 'NR == 2 { print $4 }')
+required_kib=$(((bytes + 1023) / 1024))
+if [ -z "$available_kib" ] || [ "$required_kib" -gt "$available_kib" ]; then
+    echo "ERROR: could not preallocate $size for Varnish at $cache_file (need ${required_kib} KiB, have ${available_kib:-unknown} KiB)" >&2
+    exit 70
+fi
+
+rm -f "$cache_file"
+if ! dd if=/dev/zero of="$cache_file" bs="$size" count=1 conv=fsync status=none; then
+    echo "ERROR: could not preallocate $size for Varnish at $cache_file" >&2
+    rm -f "$cache_file"
+    exit 70
+fi
+chmod 0640 "$cache_file"

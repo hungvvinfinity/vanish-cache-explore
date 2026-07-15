@@ -1,0 +1,13 @@
+---
+all:
+  children:
+    seaweed_gateways:
+      hosts:
+        gateway-01:
+          ansible_host: 203.0.113.10
+          ansible_user: ubuntu
+          gateway_public_hostname: s3-cache.example.com
+          gateway_tls_certificate_path: /etc/ssl/certs/s3-cache.fullchain.pem
+          gateway_tls_private_key_path: /etc/ssl/private/s3-cache.key
+          # Obtain this from the official SeaweedFS 4.39 release artifact.
+          gateway_seaweedfs_release_sha256: REPLACE_WITH_SHA256

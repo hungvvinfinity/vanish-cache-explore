@@ -1,0 +1,7 @@
+---
+- name: Deploy native SeaweedFS, Varnish, and Nginx gateway
+  hosts: seaweed_gateways
+  become: true
+  gather_facts: true
+  roles:
+    - seaweed_varnish_gateway

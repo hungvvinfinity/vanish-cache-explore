@@ -1,0 +1,17 @@
+[Unit]
+Description=Seed deterministic SeaweedFS demo objects
+Requires=seaweedfs.service
+After=seaweedfs.service
+ConditionPathExists=!{{ gateway_runtime_dir }}/.seeded-{{ gateway_s3_bucket }}-{{ gateway_seed_object_count }}-{{ gateway_seed_object_size }}
+
+[Service]
+Type=oneshot
+User=seaweedfs
+Group=seaweedfs
+Environment=S3_ENDPOINT=http://127.0.0.1:{{ gateway_seaweedfs_s3_port }}
+Environment=S3_BUCKET={{ gateway_s3_bucket }}
+Environment=SEED_OBJECT_COUNT={{ gateway_seed_object_count }}
+Environment=SEED_OBJECT_SIZE={{ gateway_seed_object_size }}
+ExecStart=/usr/bin/python3 /usr/local/libexec/seaweed-varnish-gateway/seed_objects.py
+ExecStartPost=/usr/bin/touch {{ gateway_runtime_dir }}/.seeded-{{ gateway_s3_bucket }}-{{ gateway_seed_object_count }}-{{ gateway_seed_object_size }}
+RemainAfterExit=yes

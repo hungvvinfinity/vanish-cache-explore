@@ -1,0 +1,21 @@
+[Unit]
+Description=Varnish bounded file cache for SeaweedFS
+Requires=seaweedfs.service
+After=network-online.target seaweedfs.service
+
+[Service]
+Type=simple
+User=varnish
+Group=varnish
+ExecStartPre=/usr/local/libexec/seaweed-varnish-gateway/preallocate-cache.sh
+ExecStart=/usr/sbin/varnishd -F -a 127.0.0.1:{{ gateway_varnish_port }} -f /etc/varnish/default.vcl -s file,{{ gateway_varnish_cache_dir }}/cache.bin,{{ gateway_varnish_disk_size }} -p feature=+http2 -p workspace_backend=1M -p http_resp_hdr_len=65536 -p http_resp_size=98304
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths={{ gateway_varnish_cache_dir }}
+
+[Install]
+WantedBy=multi-user.target

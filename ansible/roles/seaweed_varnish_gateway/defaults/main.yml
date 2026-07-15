@@ -1,0 +1,25 @@
+---
+gateway_seaweedfs_version: '4.39'
+gateway_seaweedfs_arch: amd64
+gateway_seaweedfs_download_url: "https://github.com/seaweedfs/seaweedfs/releases/download/{{ gateway_seaweedfs_version }}/linux_{{ gateway_seaweedfs_arch }}.tar.gz"
+gateway_seaweedfs_s3_port: 8333
+gateway_varnish_port: 6081
+gateway_https_port: 443
+
+gateway_s3_bucket: cache-demo
+gateway_seed_object_count: 64
+gateway_seed_object_size: 1048576
+gateway_varnish_disk_size: 32M
+
+gateway_seaweedfs_data_dir: /var/lib/seaweedfs
+gateway_varnish_cache_dir: /var/lib/varnish/cache
+gateway_runtime_dir: /var/lib/seaweedfs/gateway
+gateway_seaweedfs_binary: /usr/local/bin/weed
+
+gateway_required_packages:
+  - ca-certificates
+  - curl
+  - iproute2
+  - nginx
+  - python3
+  - varnish

@@ -1,0 +1,83 @@
+---
+- name: Verify native SeaweedFS, Varnish, and Nginx gateway
+  hosts: seaweed_gateways
+  become: true
+  gather_facts: false
+  vars:
+    verify_object_key: objects/object-01.bin
+    verify_object_path: "/{{ gateway_s3_bucket }}/{{ verify_object_key }}"
+  tasks:
+    - name: Purge the verification object from Varnish
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --fail
+          - --silent
+          - --show-error
+          - -X
+          - PURGE
+          - -H
+          - "Host: {{ gateway_public_hostname }}"
+          - "http://127.0.0.1:{{ gateway_varnish_port }}{{ verify_object_path }}"
+      changed_when: false
+
+    - name: Fetch the verification object twice through HTTPS
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --insecure
+          - --silent
+          - --show-error
+          - --head
+          - --resolve
+          - "{{ gateway_public_hostname }}:{{ gateway_https_port }}:127.0.0.1"
+          - "https://{{ gateway_public_hostname }}:{{ gateway_https_port }}{{ verify_object_path }}"
+      register: gateway_fetches
+      changed_when: false
+      loop: [1, 2]
+
+    - name: Assert cache miss then hit
+      ansible.builtin.assert:
+        that:
+          - "'X-Cache: MISS' in gateway_fetches.results[0].stdout"
+          - "'X-Cache: HIT' in gateway_fetches.results[1].stdout"
+
+    - name: Verify the public gateway rejects writes
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --insecure
+          - --silent
+          - --output
+          - /dev/null
+          - --write-out
+          - '%{http_code}'
+          - --resolve
+          - "{{ gateway_public_hostname }}:{{ gateway_https_port }}:127.0.0.1"
+          - -X
+          - PUT
+          - --data
+          - demo
+          - "https://{{ gateway_public_hostname }}:{{ gateway_https_port }}{{ verify_object_path }}"
+      register: gateway_put
+      changed_when: false
+
+    - name: Assert the public gateway is read-only
+      ansible.builtin.assert:
+        that: gateway_put.stdout == '405'
+
+    - name: Verify internal listeners are loopback-only
+      ansible.builtin.command:
+        argv: [ss, -ltn]
+      register: gateway_listeners
+      changed_when: false
+
+    - name: Assert SeaweedFS and Varnish are not public listeners
+      ansible.builtin.assert:
+        that:
+          - "'127.0.0.1:{{ gateway_varnish_port }}' in gateway_listeners.stdout"
+          - "'127.0.0.1:{{ gateway_seaweedfs_s3_port }}' in gateway_listeners.stdout"
+          - "'0.0.0.0:{{ gateway_varnish_port }}' not in gateway_listeners.stdout"
+          - "'0.0.0.0:{{ gateway_seaweedfs_s3_port }}' not in gateway_listeners.stdout"
+          - "'[::]:{{ gateway_varnish_port }}' not in gateway_listeners.stdout"
+          - "'[::]:{{ gateway_seaweedfs_s3_port }}' not in gateway_listeners.stdout"

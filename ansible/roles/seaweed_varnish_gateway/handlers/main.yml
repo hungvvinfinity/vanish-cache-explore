@@ -1,0 +1,19 @@
+---
+- name: Reload systemd daemon
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Restart seaweedfs
+  ansible.builtin.systemd_service:
+    name: seaweedfs
+    state: restarted
+
+- name: Restart varnish
+  ansible.builtin.systemd_service:
+    name: varnish
+    state: restarted
+
+- name: Restart nginx
+  ansible.builtin.systemd_service:
+    name: nginx
+    state: restarted
