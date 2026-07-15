@@ -1,175 +1,82 @@
-# Varnish + Nginx cache lab
+# SeaweedFS S3 gateway with a bounded Varnish disk cache
 
-This repo runs a small Varnish Cache layer in front of an Nginx origin. It also includes a Python tool that fills the cache with unique 1 MiB objects and reports whether the configured cache limit is being reached.
+This is a single-node local demo of a read-only S3 gateway:
 
-## Documentation
+```text
+S3 client -> HTTPS Nginx :443 -> Varnish file cache -> SeaweedFS S3
+```
 
-- [Developer guide](docs/varnish-guide.md): explains how Varnish and Nginx work in this project.
-- [Demo runbook](docs/run-demo.md): step-by-step commands for running and verifying the local demo.
+SeaweedFS persistently owns the source objects. Varnish has a separate, fixed-size local file cache and removes least-recently-used cached objects when that capacity is exhausted. Cache pressure never deletes SeaweedFS objects.
 
 ## Quick start
 
 ```bash
 cp .env.example .env
-docker compose up -d
-curl -I http://localhost:8080/cacheable
-curl -I http://localhost:8080/cacheable
-python3 tools/cache_limit.py
-```
-
-The first `curl` to `/cacheable` should show `X-Cache: MISS`. The second request should show `X-Cache: HIT`.
-
-## Run the demo
-
-Start from a clean local environment:
-
-```bash
-cp .env.example .env
-docker compose up -d
+docker compose up -d --build
 docker compose ps
-```
 
-Open the demo through Varnish:
-
-```bash
-curl -i http://localhost:8080/
-```
-
-Verify cache behavior:
-
-```bash
-curl -I http://localhost:8080/cacheable
-curl -I http://localhost:8080/cacheable
-```
-
-Expected result:
-
-- First request: `X-Cache: MISS`
-- Second request: `X-Cache: HIT`
-
-Verify private content is not cached:
-
-```bash
-curl -I http://localhost:8080/private
-curl -I http://localhost:8080/private
-```
-
-Expected result:
-
-- Both requests should show `X-Cache: MISS`
-- The response should include `Cache-Control: private, no-store`
-
-Compare the cached path and the direct origin path:
-
-```bash
-curl -I http://localhost:8080/cacheable
-curl -I http://localhost:8081/cacheable
-```
-
-Port `8080` goes through Varnish. Port `8081` reaches Nginx directly.
-
-Run the cache-size demo:
-
-```bash
+curl -k -I https://localhost:8443/cache-demo/objects/object-01.bin
+curl -k -I https://localhost:8443/cache-demo/objects/object-01.bin
 python3 tools/cache_limit.py
 ```
 
-See [docs/run-demo.md](docs/run-demo.md) for the full runbook and troubleshooting notes.
+The two `curl` calls show `X-Cache: MISS`, then `X-Cache: HIT`. The helper fetches the seeded distinct 1 MiB objects, overflows the disk cache, reports `MAIN.n_lru_nuked`, and checks that the earliest object is then a miss.
 
-Use these endpoints:
+The TLS certificate is self-signed and generated in the untracked `nginx_tls` Docker volume. `-k` is appropriate only for this local demo. To trust it instead, copy the certificate from the volume/container and pass it to your client as a CA file.
 
-- `http://localhost:8080/` serves a small demo index through Varnish.
-- `http://localhost:8080/cacheable` is explicitly cacheable.
-- `http://localhost:8080/private` is explicitly private and should not be cached.
-- `http://localhost:8080/payload/1m.bin` is a generated 1 MiB payload used by the cache-fill tool.
-- `http://localhost:8081/` reaches the Nginx origin directly.
+## Endpoint and data
 
-Stop and remove the stack with:
+- Public, read-only, path-style S3 endpoint: `https://localhost:${S3_HTTPS_PORT:-8443}`
+- Demo bucket: `cache-demo` (configurable with `S3_BUCKET`)
+- Seeded keys: `cache-demo/objects/object-01.bin` through `object-64.bin`, each 1 MiB by default
+- SeaweedFS administration and S3 ports are private to the Compose network; only Nginx publishes a public port.
+
+For example, an AWS CLI read uses path-style addressing and the demo certificate bypass:
+
+```bash
+aws --endpoint-url https://localhost:8443 --no-verify-ssl \
+  --no-sign-request s3 cp s3://cache-demo/objects/object-01.bin /tmp/object-01.bin
+```
+
+The public Nginx endpoint permits only `GET` and `HEAD`. `PUT`, `POST`, `DELETE`, bucket management methods, and `PURGE` return `405`; they are never sent to SeaweedFS or Varnish.
+
+## Configuration
+
+Copy `.env.example` to `.env`. The primary settings are:
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `S3_HTTPS_PORT` | `8443` | Host port published by the HTTPS gateway. |
+| `VARNISH_DISK_SIZE` | `32M` | Fixed size of Varnish's `file` storage backend. |
+| `VARNISH_PURGE_PORT` | `6081` | Varnish management listener, bound only to `127.0.0.1`. |
+| `S3_BUCKET` | `cache-demo` | Bucket created by `weed mini` and populated by the seed job. |
+| `SEED_OBJECT_COUNT` | `64` | Number of fixed, 1 MiB source objects written once by the seed job. |
+
+Before Varnish starts, `varnish-init` writes and fsyncs the full cache backing file in `varnish_cache`. A capacity failure therefore fails the init service clearly instead of letting Varnish begin serving with an undersized cache. The backing file is deliberately distinct from the persistent `seaweed_data` volume.
+
+`MAIN.n_lru_nuked` is Varnish's storage-pressure counter. A growing value means it evicted least-recently-used cache entries to make room; it is expected with a deliberately small cache in this demo. See the [Varnish storage backend documentation](https://www.varnish.org/docs/users-guide/storage-backends/) and its [cache sizing guide](https://varnish-cache.org/docs/5.2/users-guide/sizing-your-cache.html).
+
+## Cache-only purge
+
+Varnish's only host-published port is loopback-bound. A purge must use the same `Host` that Nginx used for the cached request; this preserves the Varnish hash. It removes the selected cached URL and Vary variants only, leaving SeaweedFS source data unchanged.
+
+```bash
+curl -i -X PURGE \
+  -H 'Host: localhost:8443' \
+  http://127.0.0.1:6081/cache-demo/objects/object-01.bin
+```
+
+The VCL also restricts purge clients to loopback and private networks. See [Varnish's purge documentation](https://www.varnish.org/docs/users-guide/purging/).
+
+## Documentation
+
+- [Demo runbook](docs/run-demo.md): full verification sequence, including public read-only enforcement and cache-only purge.
+- [Developer guide](docs/varnish-guide.md): component responsibilities and cache policy.
+
+Stop and remove persistent demo data, cache, and the generated certificate with:
 
 ```bash
 docker compose down -v
 ```
 
-## Configuration
-
-Copy `.env.example` to `.env` and adjust the values:
-
-```dotenv
-VARNISH_IMAGE=varnish:9.0
-NGINX_IMAGE=nginx:1.30.3-alpine
-VARNISH_PORT=8080
-ORIGIN_PORT=8081
-VARNISH_SIZE=128M
-```
-
-`VARNISH_SIZE` controls the Varnish object storage. The official Varnish image reads this environment variable and starts Varnish with malloc storage of that size.
-
-The Compose file also sets `workspace_backend=1M`. That workspace is separate from object storage and is used while Varnish receives backend responses.
-
-With `malloc`, cached objects live in process memory. Do not set `VARNISH_SIZE` equal to all available container or host memory. Varnish also needs memory for worker threads, metadata, headers, workspaces, logs, and allocator overhead. A practical starting point is to reserve only the hot working set and leave comfortable headroom outside the cache storage size.
-
-For example:
-
-- Small local test: `VARNISH_SIZE=64M` or `128M`.
-- Small production service: start from the measured hot object set, then add margin.
-- Memory-constrained host: set a Docker memory limit higher than `VARNISH_SIZE`, not equal to it.
-
-The current Compose file exposes the origin on `ORIGIN_PORT` for easy inspection. In production, keep the origin private and expose only Varnish.
-
-## Cache-limit tool
-
-Run:
-
-```bash
-python3 tools/cache_limit.py
-```
-
-The tool:
-
-1. Reads `VARNISH_SIZE` from `.env`, the environment, or `.env.example`.
-2. Requests unique URLs under `/payload/1m.bin`.
-3. Reads Varnish counters through `docker compose exec -T varnish varnishstat -1 -j`.
-4. Reports cache misses, hits, object count, storage used/free, and `MAIN.n_lru_nuked`.
-
-Useful options:
-
-```bash
-python3 tools/cache_limit.py --fill-ratio 2.0
-python3 tools/cache_limit.py --varnish-size 64M
-python3 tools/cache_limit.py --base-url http://localhost:8080 --max-requests 200
-```
-
-`MAIN.n_lru_nuked` increasing means Varnish has reached storage pressure and evicted least-recently-used objects to make room for new ones.
-
-## Varnish cache best practices
-
-Prefer origin cache headers first. The best long-term setup is for the application or origin server to emit accurate `Cache-Control` headers. VCL should enforce safety and handle exceptions, not become the only place where application freshness rules exist.
-
-Cache only safe methods. The VCL passes anything that is not `GET` or `HEAD`, which avoids accidentally caching mutation responses such as `POST`, `PUT`, or `DELETE`.
-
-Do not cache personalized responses by default. The VCL passes requests with `Authorization`, session-like cookies, private paths, `Set-Cookie`, or `Cache-Control: private/no-store/no-cache`. If you later cache authenticated content, design the cache key and invalidation rules explicitly.
-
-Normalize only what is safe. This demo sorts query parameters with `std.querysort()` so equivalent query strings hash consistently. Do not strip query parameters or cookies globally unless you know they do not affect the response.
-
-Use TTL, grace, and keep deliberately:
-
-- `ttl` is how long an object is fresh.
-- `grace` lets Varnish serve stale content while refreshing or while the backend is unhealthy.
-- `keep` retains expired objects for conditional backend validation.
-
-The demo gives `/payload/*` and `/cacheable` a `1h` TTL, `5m` grace, and `10m` keep. Real values should reflect how stale each response is allowed to be.
-
-Monitor the right counters:
-
-- `MAIN.cache_hit` and `MAIN.cache_miss` show cache effectiveness.
-- `MAIN.n_lru_nuked` shows eviction caused by storage pressure.
-- `MAIN.n_object` shows the current object count.
-- `SMA.*.g_bytes` and `SMA.*.g_space` show malloc storage used and free.
-
-Size the cache from the hot working set. Total site size is usually the wrong number. Estimate the objects repeatedly requested within the freshness window, then validate with real counters. If `n_lru_nuked` rises during normal traffic and hit rate drops, the cache is too small or the cache key is too fragmented.
-
-Avoid cache-key fragmentation. Excess cookies, tracking query parameters, per-user headers, and high-cardinality URL parameters can create many variants of the same content. Normalize or ignore them only when the origin response is truly identical.
-
-Plan invalidation. This demo supports `PURGE` from loopback and private Docker networks. For production, restrict purge access tightly and prefer application-driven invalidation for content that changes before its TTL expires.
-
-Pin images and update intentionally. `.env.example` pins image tags so rebuilds are repeatable. Review Varnish and Nginx release notes before changing major or minor versions.
+SeaweedFS is pinned and started with its documented `weed mini` single-node S3 setup. This is a local demo, not an HA or production SeaweedFS deployment; see the [SeaweedFS Docker quick start](https://github.com/seaweedfs/seaweedfs).

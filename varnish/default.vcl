@@ -3,8 +3,8 @@ vcl 4.1;
 import std;
 
 backend default {
-    .host = "origin";
-    .port = "80";
+    .host = "seaweed";
+    .port = "8333";
     .connect_timeout = 2s;
     .first_byte_timeout = 30s;
     .between_bytes_timeout = 10s;
@@ -31,9 +31,15 @@ sub vcl_recv {
         if (!client.ip ~ purge) {
             return (synth(405, "PURGE is not allowed from this client"));
         }
+        if (req.url !~ "^/cache-demo/objects/[^?]+$") {
+            return (synth(400, "PURGE requires an exact /cache-demo/objects/<key> URL"));
+        }
+        set req.url = std.querysort(req.url);
         return (purge);
     }
 
+    # Mutations never enter the cache. Nginx rejects them publicly; this is a
+    # second guard for requests made directly on the private listener.
     if (req.method != "GET" && req.method != "HEAD") {
         return (pass);
     }
@@ -42,51 +48,56 @@ sub vcl_recv {
         return (pass);
     }
 
-    if (req.url ~ "^/(admin|account|api/private|login|logout|private)(/|$)") {
+    if (req.http.Cookie) {
         return (pass);
     }
 
-    if (req.http.Cookie) {
-        if (req.http.Cookie ~ "(?i)(auth|logged_in|session|token)=") {
-            return (pass);
-        }
-
-        unset req.http.Cookie;
+    # Only path-style reads of seeded S3 objects are cache candidates.
+    if (req.url !~ "^/cache-demo/objects/[^?]+") {
+        return (pass);
     }
 
+    # Equivalent query strings share a hash, without removing parameters that
+    # may affect a real S3 response.
     set req.url = std.querysort(req.url);
     return (hash);
 }
 
 sub vcl_backend_response {
-    if (beresp.http.Set-Cookie) {
+    # Never store writes, errors, bucket responses, or non-object responses.
+    if ((bereq.method != "GET" && bereq.method != "HEAD") ||
+        beresp.status != 200 ||
+        bereq.url !~ "^/cache-demo/objects/[^?]+") {
         set beresp.uncacheable = true;
-        set beresp.ttl = 120s;
+        set beresp.ttl = 0s;
         return (deliver);
     }
 
-    if (beresp.http.Cache-Control ~ "(?i)(private|no-cache|no-store)") {
+    if (beresp.http.Set-Cookie || beresp.http.Cache-Control ~ "(?i)(private|no-cache|no-store)") {
         set beresp.uncacheable = true;
-        set beresp.ttl = 120s;
+        set beresp.ttl = 0s;
         return (deliver);
     }
 
-    if (bereq.url ~ "^/payload/" || bereq.url ~ "^/cacheable") {
-        set beresp.ttl = 1h;
-        set beresp.grace = 5m;
-        set beresp.keep = 10m;
-        return (deliver);
-    }
-
-    if (beresp.ttl <= 0s) {
-        set beresp.uncacheable = true;
-        set beresp.ttl = 120s;
-        return (deliver);
-    }
-
-    set beresp.grace = 1m;
-    set beresp.keep = 5m;
+    set beresp.ttl = 1h;
+    set beresp.grace = 5m;
+    set beresp.keep = 10m;
+    # The Docker entrypoint also provides a default malloc store. Store actual
+    # cache objects in the explicitly configured second `file` store instead.
+    set beresp.storage = storage.s1;
     return (deliver);
+}
+
+sub vcl_purge {
+    return (synth(200, "Purged cached URL and its variants"));
+}
+
+sub vcl_synth {
+    if (resp.status == 200 && resp.reason == "Purged cached URL and its variants") {
+    set resp.http.Content-Type = "text/plain; charset=utf-8";
+    synthetic("Purged cached URL and its variants. SeaweedFS source data was not changed.");
+    return (deliver);
+    }
 }
 
 sub vcl_deliver {
@@ -95,7 +106,6 @@ sub vcl_deliver {
     } else {
         set resp.http.X-Cache = "MISS";
     }
-
     set resp.http.X-Cache-Hits = obj.hits;
     set resp.http.X-Cache-Host = server.hostname;
 }

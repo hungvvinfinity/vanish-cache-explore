@@ -1,33 +1,52 @@
 services:
-  origin:
-    image: ${NGINX_IMAGE:-nginx:1.30.3-alpine}
-    command:
-      - /bin/sh
-      - -c
-      - |
-        mkdir -p /tmp/payload
-        dd if=/dev/zero of=/tmp/payload/1m.bin bs=1048576 count=1 2>/dev/null
-        exec nginx -g 'daemon off;'
-    ports:
-      - "${ORIGIN_PORT:-8081}:80"
+  seaweed:
+    image: ${SEAWEEDFS_IMAGE:-chrislusf/seaweedfs:4.39}
+    environment:
+      # `weed mini` creates this bucket before the seed job runs. Omitting
+      # credentials intentionally enables SeaweedFS's local development mode.
+      S3_BUCKET: ${S3_BUCKET:-cache-demo}
+    command: ["mini", "-dir=/data"]
     volumes:
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./nginx/html:/usr/share/nginx/html:ro
+      - seaweed_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/healthz || exit 1"]
-      interval: 10s
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8333/healthz"]
+      interval: 5s
       timeout: 3s
-      retries: 5
-      start_period: 5s
+      retries: 24
+      start_period: 10s
+
+  seed:
+    image: ${PYTHON_IMAGE:-python:3.13.7-alpine}
+    depends_on:
+      seaweed:
+        condition: service_healthy
+    environment:
+      S3_ENDPOINT: http://seaweed:8333
+      S3_BUCKET: ${S3_BUCKET:-cache-demo}
+      SEED_OBJECT_COUNT: ${SEED_OBJECT_COUNT:-64}
+    command: ["python", "/tools/seed_objects.py"]
+    volumes:
+      - ./tools/seed_objects.py:/tools/seed_objects.py:ro
+    restart: "no"
+
+  varnish-init:
+    image: ${VARNISH_INIT_IMAGE:-busybox:1.37.0}
+    environment:
+      VARNISH_DISK_SIZE: ${VARNISH_DISK_SIZE:-32M}
+    command: ["/bin/sh", "/scripts/preallocate-cache.sh"]
+    volumes:
+      - varnish_cache:/var/lib/varnish/cache
+      - ./varnish/preallocate-cache.sh:/scripts/preallocate-cache.sh:ro
+    restart: "no"
 
   varnish:
-    image: ${VARNISH_IMAGE:-varnish:9.0}
-    environment:
-      VARNISH_SIZE: ${VARNISH_SIZE:-128M}
+    image: ${VARNISH_IMAGE:-varnish:9.0.3-1}
     command:
       - -F
       - -f
       - /etc/varnish/default.vcl
+      - -s
+      - file,/var/lib/varnish/cache/cache.bin,${VARNISH_DISK_SIZE:-32M}
       - -p
       - feature=+http2
       - -p
@@ -37,19 +56,53 @@ services:
       - -p
       - http_resp_size=98304
     depends_on:
-      origin:
+      seaweed:
         condition: service_healthy
+      varnish-init:
+        condition: service_completed_successfully
+    # This is the private cache-management listener. Nginx reaches the same
+    # container port over the Compose network; the host can reach it only on
+    # loopback for cache-only PURGE requests and diagnostics.
     ports:
-      - "${VARNISH_PORT:-8080}:80"
+      - "127.0.0.1:${VARNISH_PURGE_PORT:-6081}:80"
     tmpfs:
-      - /var/lib/varnish:exec,uid=1000,gid=1000,mode=0755
-    ulimits:
-      memlock: -1
+      - /var/lib/varnish/varnishd:exec,uid=1000,gid=1000,mode=0755
     volumes:
+      - varnish_cache:/var/lib/varnish/cache
       - ./varnish/default.vcl:/etc/varnish/default.vcl:ro
     healthcheck:
-      test: ["CMD", "varnishstat", "-1"]
-      interval: 10s
+      test: ["CMD-SHELL", "varnishstat -1 >/dev/null && varnishadm backend.list | grep -q 'healthy'"]
+      interval: 5s
       timeout: 3s
-      retries: 5
+      retries: 12
       start_period: 5s
+
+  nginx:
+    build:
+      context: ./nginx
+      args:
+        NGINX_IMAGE: ${NGINX_IMAGE:-nginx:1.30.3-alpine}
+    image: vanish-cache-explore-nginx:local
+    depends_on:
+      varnish:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+    command: ["/bin/sh", "/scripts/start-nginx.sh"]
+    ports:
+      - "${S3_HTTPS_PORT:-8443}:443"
+    volumes:
+      - nginx_tls:/etc/nginx/tls
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/start-nginx.sh:/scripts/start-nginx.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate -q -O /dev/null https://127.0.0.1/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+volumes:
+  seaweed_data:
+  varnish_cache:
+  nginx_tls:
